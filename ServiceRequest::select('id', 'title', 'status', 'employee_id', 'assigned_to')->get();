@@ -1,0 +1,28 @@
+[90m= [39m[34;4mIlluminate\Database\Eloquent\Collection[39;24m {#7365
+    [34mall[39m: [
+      [34;4mApp\Models\User[39;24m {#8080
+        [34mname[39m: [32m"[39m[32mSarah Manager[39m[32m"[39m,
+        [34memail[39m: [32m"[39m[32msarah@quantix.test[39m[32m"[39m,
+        [34mrole[39m: [32m"[39m[32mmanager[39m[32m"[39m,
+        [34mmanager_id[39m: [36mnull[39m,
+      },
+      [34;4mApp\Models\User[39;24m {#8081
+        [34mname[39m: [32m"[39m[32mJohn Employee[39m[32m"[39m,
+        [34memail[39m: [32m"[39m[32mjohn@quantix.test[39m[32m"[39m,
+        [34mrole[39m: [32m"[39m[32memployee[39m[32m"[39m,
+        [34mmanager_id[39m: [35m1[39m,
+      },
+      [34;4mApp\Models\User[39;24m {#8455
+        [34mname[39m: [32m"[39m[32mEmma Employee[39m[32m"[39m,
+        [34memail[39m: [32m"[39m[32memma@quantix.test[39m[32m"[39m,
+        [34mrole[39m: [32m"[39m[32memployee[39m[32m"[39m,
+        [34mmanager_id[39m: [35m1[39m,
+      },
+      [34;4mApp\Models\User[39;24m {#7358
+        [34mname[39m: [32m"[39m[32mOliver Operations[39m[32m"[39m,
+        [34memail[39m: [32m"[39m[32moliver@quantix.test[39m[32m"[39m,
+        [34mrole[39m: [32m"[39m[32moperations[39m[32m"[39m,
+        [34mmanager_id[39m: [36mnull[39m,
+      },
+    ],
+  }

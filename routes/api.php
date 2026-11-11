@@ -6,6 +6,7 @@ use App\Http\Controllers\Api\ServiceRequestController;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Route;
 use App\Http\Controllers\Api\ServiceRequestWorkflowController;
+use App\Http\Controllers\Api\CommentController;
 
 Route::post('/login', [AuthController::class, 'login']);
 
@@ -27,6 +28,11 @@ Route::post(
 Route::post(
     '/service-requests/{serviceRequest}/complete',
     [ServiceRequestWorkflowController::class, 'complete']
+);
+
+Route::post(
+    '/service-requests/{serviceRequest}/comments',
+    [CommentController::class, 'store']
 );
 
 Route::middleware('auth:sanctum')->group(function () {

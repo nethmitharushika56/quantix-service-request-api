@@ -5,15 +5,19 @@ namespace App\Http\Controllers\Api;
 use App\Http\Controllers\Controller;
 use App\Models\ServiceRequest;
 use App\Models\StatusHistory;
+use App\Models\User;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
 
 class ServiceRequestWorkflowController extends Controller
 {
+    /**
+     * Employee submits a Draft or Returned request.
+     */
     public function submit(Request $request, ServiceRequest $serviceRequest)
     {
         $user = $request->user();
 
-        // Only the employee who owns the request can submit it.
         if (
             $user->role !== 'employee' ||
             $serviceRequest->employee_id !== $user->id
@@ -23,217 +27,255 @@ class ServiceRequestWorkflowController extends Controller
             ], 403);
         }
 
-        // Only Draft and Returned requests can be submitted.
         if (!in_array($serviceRequest->status, ['Draft', 'Returned'])) {
             return response()->json([
                 'message' => 'Only Draft or Returned requests can be submitted.',
             ], 422);
         }
 
-        $oldStatus = $serviceRequest->status;
+        DB::transaction(function () use ($serviceRequest, $user) {
+            $oldStatus = $serviceRequest->status;
 
-        $serviceRequest->update([
-            'status' => 'Submitted',
-        ]);
+            $serviceRequest->update([
+                'status' => 'Submitted',
+            ]);
 
-        // Record the status transition.
-        StatusHistory::create([
-            'service_request_id' => $serviceRequest->id,
-            'actor_id' => $user->id,
-            'old_status' => $oldStatus,
-            'new_status' => 'Submitted',
-            'comment' => 'Request submitted by employee.',
-            'created_at' => now(),
-        ]);
+            StatusHistory::create([
+                'service_request_id' => $serviceRequest->id,
+                'actor_id' => $user->id,
+                'old_status' => $oldStatus,
+                'new_status' => 'Submitted',
+                'comment' => 'Request submitted by employee.',
+                'created_at' => now(),
+            ]);
+        });
 
         return response()->json([
             'message' => 'Service request submitted successfully.',
             'data' => $serviceRequest->fresh(),
-        ], 200);
+        ]);
     }
 
+    /**
+     * Manager approves, returns or rejects a request.
+     */
     public function decide(Request $request, ServiceRequest $serviceRequest)
-{
-    $user = $request->user();
+    {
+        $user = $request->user();
 
-    if ($user->role !== 'manager') {
+        if ($user->role !== 'manager') {
+            return response()->json([
+                'message' => 'Only managers can review requests.',
+            ], 403);
+        }
+
+        if ($serviceRequest->employee->manager_id !== $user->id) {
+            return response()->json([
+                'message' => 'You can only review requests from your direct reports.',
+            ], 403);
+        }
+
+        if ($serviceRequest->status !== 'Submitted') {
+            return response()->json([
+                'message' => 'Only submitted requests can be reviewed.',
+            ], 422);
+        }
+
+        $validated = $request->validate([
+            'decision' => [
+                'required',
+                'in:Approved,Returned,Rejected',
+            ],
+            'comment' => [
+                'required',
+                'string',
+                'max:1000',
+            ],
+        ]);
+
+        DB::transaction(function () use (
+            $serviceRequest,
+            $user,
+            $validated
+        ) {
+            $oldStatus = $serviceRequest->status;
+            $newStatus = $validated['decision'];
+
+            $serviceRequest->update([
+                'status' => $newStatus,
+            ]);
+
+            StatusHistory::create([
+                'service_request_id' => $serviceRequest->id,
+                'actor_id' => $user->id,
+                'old_status' => $oldStatus,
+                'new_status' => $newStatus,
+                'comment' => $validated['comment'],
+                'created_at' => now(),
+            ]);
+        });
+
         return response()->json([
-            'message' => 'Only managers can review requests.',
-        ], 403);
+            'message' => 'Manager decision recorded successfully.',
+            'data' => $serviceRequest->fresh(),
+        ]);
     }
 
-    // Check whether the employee reports directly to this manager.
-    if (
-        $serviceRequest->employee->manager_id !== $user->id
-    ) {
+    /**
+     * Operations assigns an approved request to an operations user.
+     */
+    public function assign(Request $request, ServiceRequest $serviceRequest)
+    {
+        $user = $request->user();
+
+        if ($user->role !== 'operations') {
+            return response()->json([
+                'message' => 'Only operations users can assign requests.',
+            ], 403);
+        }
+
+        if ($serviceRequest->status !== 'Approved') {
+            return response()->json([
+                'message' => 'Only approved requests can be assigned.',
+            ], 422);
+        }
+
+        $validated = $request->validate([
+            'assigned_to' => [
+                'required',
+                'integer',
+                'exists:users,id',
+            ],
+        ]);
+
+        $assignee = User::findOrFail($validated['assigned_to']);
+
+        if ($assignee->role !== 'operations') {
+            return response()->json([
+                'message' => 'Requests can only be assigned to operations users.',
+            ], 422);
+        }
+
+        DB::transaction(function () use (
+            $serviceRequest,
+            $assignee,
+            $user
+        ) {
+            $serviceRequest->update([
+                'assigned_to' => $assignee->id,
+            ]);
+
+            // Record the assignment as an audit event.
+            StatusHistory::create([
+                'service_request_id' => $serviceRequest->id,
+                'actor_id' => $user->id,
+                'old_status' => $serviceRequest->status,
+                'new_status' => $serviceRequest->status,
+                'comment' => 'Request assigned to operations user ID '
+                    . $assignee->id . '.',
+                'created_at' => now(),
+            ]);
+        });
+
         return response()->json([
-            'message' => 'You can only review requests from your direct reports.',
-        ], 403);
+            'message' => 'Service request assigned successfully.',
+            'data' => $serviceRequest->fresh('assignee'),
+        ]);
     }
 
-    if ($serviceRequest->status !== 'Submitted') {
+    /**
+     * Assigned operations user starts the work.
+     */
+    public function start(Request $request, ServiceRequest $serviceRequest)
+    {
+        $user = $request->user();
+
+        if ($user->role !== 'operations') {
+            return response()->json([
+                'message' => 'Only operations users can start requests.',
+            ], 403);
+        }
+
+        if ($serviceRequest->assigned_to !== $user->id) {
+            return response()->json([
+                'message' => 'You can only start requests assigned to you.',
+            ], 403);
+        }
+
+        if ($serviceRequest->status !== 'Approved') {
+            return response()->json([
+                'message' => 'Only approved requests can be started.',
+            ], 422);
+        }
+
+        DB::transaction(function () use ($serviceRequest, $user) {
+            $oldStatus = $serviceRequest->status;
+
+            $serviceRequest->update([
+                'status' => 'In Progress',
+            ]);
+
+            StatusHistory::create([
+                'service_request_id' => $serviceRequest->id,
+                'actor_id' => $user->id,
+                'old_status' => $oldStatus,
+                'new_status' => 'In Progress',
+                'comment' => 'Work started by operations.',
+                'created_at' => now(),
+            ]);
+        });
+
         return response()->json([
-            'message' => 'Only submitted requests can be reviewed.',
-        ], 422);
+            'message' => 'Request marked as In Progress.',
+            'data' => $serviceRequest->fresh(),
+        ]);
     }
 
-    $validated = $request->validate([
-        'decision' => [
-            'required',
-            'in:Approved,Returned,Rejected',
-        ],
-        'comment' => [
-            'required',
-            'string',
-            'max:1000',
-        ],
-    ]);
+    /**
+     * Assigned operations user completes the work.
+     */
+    public function complete(Request $request, ServiceRequest $serviceRequest)
+    {
+        $user = $request->user();
 
-    $oldStatus = $serviceRequest->status;
-    $newStatus = $validated['decision'];
+        if ($user->role !== 'operations') {
+            return response()->json([
+                'message' => 'Only operations users can complete requests.',
+            ], 403);
+        }
 
-    $serviceRequest->update([
-        'status' => $newStatus,
-    ]);
+        if ($serviceRequest->assigned_to !== $user->id) {
+            return response()->json([
+                'message' => 'You can only complete requests assigned to you.',
+            ], 403);
+        }
 
-    StatusHistory::create([
-        'service_request_id' => $serviceRequest->id,
-        'actor_id' => $user->id,
-        'old_status' => $oldStatus,
-        'new_status' => $newStatus,
-        'comment' => $validated['comment'],
-        'created_at' => now(),
-    ]);
+        if ($serviceRequest->status !== 'In Progress') {
+            return response()->json([
+                'message' => 'Only In Progress requests can be completed.',
+            ], 422);
+        }
 
-    return response()->json([
-        'message' => 'Manager decision recorded successfully.',
-        'data' => $serviceRequest->fresh(),
-    ]);
-}
+        DB::transaction(function () use ($serviceRequest, $user) {
+            $oldStatus = $serviceRequest->status;
 
-public function assign(Request $request, ServiceRequest $serviceRequest)
-{
-    $user = $request->user();
+            $serviceRequest->update([
+                'status' => 'Completed',
+            ]);
 
-    if ($user->role !== 'operations') {
+            StatusHistory::create([
+                'service_request_id' => $serviceRequest->id,
+                'actor_id' => $user->id,
+                'old_status' => $oldStatus,
+                'new_status' => 'Completed',
+                'comment' => 'Work completed by operations.',
+                'created_at' => now(),
+            ]);
+        });
+
         return response()->json([
-            'message' => 'Only operations users can assign requests.',
-        ], 403);
+            'message' => 'Request marked as Completed.',
+            'data' => $serviceRequest->fresh(),
+        ]);
     }
-
-    if ($serviceRequest->status !== 'Approved') {
-        return response()->json([
-            'message' => 'Only approved requests can be assigned.',
-        ], 422);
-    }
-
-    $validated = $request->validate([
-        'assigned_to' => ['required', 'integer', 'exists:users,id'],
-    ]);
-
-    $assignee = \App\Models\User::findOrFail(
-        $validated['assigned_to']
-    );
-
-    if ($assignee->role !== 'operations') {
-        return response()->json([
-            'message' => 'Requests can only be assigned to operations users.',
-        ], 422);
-    }
-
-    $serviceRequest->update([
-        'assigned_to' => $assignee->id,
-    ]);
-
-    return response()->json([
-        'message' => 'Service request assigned successfully.',
-        'data' => $serviceRequest->fresh('assignee'),
-    ]);
-}
-
-public function start(Request $request, ServiceRequest $serviceRequest)
-{
-    $user = $request->user();
-
-    if ($user->role !== 'operations') {
-        return response()->json([
-            'message' => 'Only operations users can start requests.',
-        ], 403);
-    }
-
-    if ($serviceRequest->assigned_to !== $user->id) {
-        return response()->json([
-            'message' => 'You can only start requests assigned to you.',
-        ], 403);
-    }
-
-    if ($serviceRequest->status !== 'Approved') {
-        return response()->json([
-            'message' => 'Only approved requests can be started.',
-        ], 422);
-    }
-
-    $oldStatus = $serviceRequest->status;
-
-    $serviceRequest->update([
-        'status' => 'In Progress',
-    ]);
-
-    StatusHistory::create([
-        'service_request_id' => $serviceRequest->id,
-        'actor_id' => $user->id,
-        'old_status' => $oldStatus,
-        'new_status' => 'In Progress',
-        'comment' => 'Work started by operations.',
-        'created_at' => now(),
-    ]);
-
-    return response()->json([
-        'message' => 'Request marked as In Progress.',
-        'data' => $serviceRequest->fresh(),
-    ]);
-}
-
-public function complete(Request $request, ServiceRequest $serviceRequest)
-{
-    $user = $request->user();
-
-    if ($user->role !== 'operations') {
-        return response()->json([
-            'message' => 'Only operations users can complete requests.',
-        ], 403);
-    }
-
-    if ($serviceRequest->assigned_to !== $user->id) {
-        return response()->json([
-            'message' => 'You can only complete requests assigned to you.',
-        ], 403);
-    }
-
-    if ($serviceRequest->status !== 'In Progress') {
-        return response()->json([
-            'message' => 'Only In Progress requests can be completed.',
-        ], 422);
-    }
-
-    $oldStatus = $serviceRequest->status;
-
-    $serviceRequest->update([
-        'status' => 'Completed',
-    ]);
-
-    StatusHistory::create([
-        'service_request_id' => $serviceRequest->id,
-        'actor_id' => $user->id,
-        'old_status' => $oldStatus,
-        'new_status' => 'Completed',
-        'comment' => 'Work completed by operations.',
-        'created_at' => now(),
-    ]);
-
-    return response()->json([
-        'message' => 'Request marked as Completed.',
-        'data' => $serviceRequest->fresh(),
-    ]);
-}
 }

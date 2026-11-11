@@ -14,37 +14,40 @@ class CommentSeeder extends Seeder
         $manager = User::where('role', 'manager')->firstOrFail();
         $operations = User::where('role', 'operations')->firstOrFail();
 
-        $returnedRequest = ServiceRequest::where('status', 'Returned')
-            ->first();
-
-        $approvedRequest = ServiceRequest::where('status', 'Approved')
-            ->first();
-
-        $inProgressRequest = ServiceRequest::where('status', 'In Progress')
-            ->first();
+        $returnedRequest = ServiceRequest::where('status', 'Returned')->first();
 
         if ($returnedRequest) {
-            Comment::create([
-                'service_request_id' => $returnedRequest->id,
-                'user_id' => $manager->id,
-                'comment' => 'Please provide additional information.',
-            ]);
+            Comment::firstOrCreate(
+                [
+                    'service_request_id' => $returnedRequest->id,
+                    'user_id' => $manager->id,
+                    'comment' => 'Please provide more information.',
+                ]
+            );
         }
+
+        $approvedRequest = ServiceRequest::where('status', 'Approved')->first();
 
         if ($approvedRequest) {
-            Comment::create([
-                'service_request_id' => $approvedRequest->id,
-                'user_id' => $manager->id,
-                'comment' => 'Approved. Please proceed.',
-            ]);
+            Comment::firstOrCreate(
+                [
+                    'service_request_id' => $approvedRequest->id,
+                    'user_id' => $manager->id,
+                    'comment' => 'Your request has been approved.',
+                ]
+            );
         }
 
-        if ($inProgressRequest) {
-            Comment::create([
-                'service_request_id' => $inProgressRequest->id,
-                'user_id' => $operations->id,
-                'comment' => 'Work has started.',
-            ]);
+        $progressRequest = ServiceRequest::where('status', 'In Progress')->first();
+
+        if ($progressRequest) {
+            Comment::firstOrCreate(
+                [
+                    'service_request_id' => $progressRequest->id,
+                    'user_id' => $operations->id,
+                    'comment' => 'Work has started on this request.',
+                ]
+            );
         }
     }
 }

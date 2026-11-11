@@ -20,30 +20,35 @@ class ServiceRequestSeeder extends Seeder
                 'title' => 'Laptop Repair',
                 'description' => 'Laptop keyboard is not functioning.',
                 'status' => 'Draft',
+                'assigned_to' => null,
             ],
             [
                 'employee_id' => $john->id,
                 'title' => 'Software Installation',
                 'description' => 'Requesting installation of approved software.',
                 'status' => 'Submitted',
+                'assigned_to' => null,
             ],
             [
                 'employee_id' => $emma->id,
                 'title' => 'Network Access',
                 'description' => 'Requesting access to the internal network.',
                 'status' => 'Returned',
+                'assigned_to' => null,
             ],
             [
                 'employee_id' => $emma->id,
                 'title' => 'Monitor Replacement',
                 'description' => 'Existing monitor has display issues.',
                 'status' => 'Approved',
+                'assigned_to' => null,
             ],
             [
                 'employee_id' => $john->id,
                 'title' => 'Email Configuration',
                 'description' => 'Requesting corporate email configuration.',
                 'status' => 'Rejected',
+                'assigned_to' => null,
             ],
             [
                 'employee_id' => $emma->id,
@@ -64,23 +69,32 @@ class ServiceRequestSeeder extends Seeder
                 'title' => 'Keyboard Replacement',
                 'description' => 'Requesting a replacement keyboard.',
                 'status' => 'Submitted',
+                'assigned_to' => null,
             ],
             [
                 'employee_id' => $john->id,
                 'title' => 'Development Environment',
                 'description' => 'Requesting development environment setup.',
                 'status' => 'Approved',
+                'assigned_to' => null,
             ],
             [
                 'employee_id' => $emma->id,
                 'title' => 'Office Chair Repair',
                 'description' => 'Office chair needs maintenance.',
                 'status' => 'Draft',
+                'assigned_to' => null,
             ],
         ];
 
         foreach ($requests as $request) {
-            ServiceRequest::create($request);
+            ServiceRequest::updateOrCreate(
+                [
+                    'employee_id' => $request['employee_id'],
+                    'title' => $request['title'],
+                ],
+                $request
+            );
         }
     }
 }

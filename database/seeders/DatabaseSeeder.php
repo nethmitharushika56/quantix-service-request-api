@@ -12,5 +12,12 @@ class DatabaseSeeder extends Seeder
             UserSeeder::class,
             ServiceRequestSeeder::class,
         ]);
+
+        $this->call([
+    UserSeeder::class,
+    ServiceRequestSeeder::class,
+    StatusHistorySeeder::class,
+    CommentSeeder::class,
+]);
     }
 }

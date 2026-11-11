@@ -10,13 +10,15 @@ class UserSeeder extends Seeder
     public function run(): void
     {
         // Create a manager
-        $manager = User::create([
-            'name' => 'Sarah Manager',
-            'email' => 'sarah@quantix.test',
-            'password' => 'Password123!',
-            'role' => 'manager',
-            'manager_id' => null,
-        ]);
+        $manager = User::updateOrCreate(
+    ['email' => 'sarah@quantix.test'],
+    [
+        'name' => 'Sarah Manager',
+        'password' => 'Password123!',
+        'role' => 'manager',
+        'manager_id' => null,
+    ]
+);
 
         // Create two employees reporting to Sarah
         User::create([

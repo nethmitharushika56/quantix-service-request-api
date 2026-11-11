@@ -187,6 +187,28 @@ Remaining features are under development.
 **Position:** Software Engineering Intern  
 **Assignment:** Service Request & Approval API
 
+
+## Technical Decisions and Limitations
+
+### Database Transactions and Concurrency
+
+The application uses Laravel database transactions to ensure that service request status changes and their corresponding audit history records are saved together.
+
+The workflow also uses Laravel's `lockForUpdate()` query method when retrieving service requests inside transactions. This provides a locking mechanism on database systems that support row-level locking, such as MySQL and PostgreSQL.
+
+**SQLite limitation:**
+
+This project uses SQLite as its development database. SQLite does not provide the same row-level `SELECT FOR UPDATE` locking behavior as MySQL or PostgreSQL. Therefore, the use of `lockForUpdate()` in this project does not guarantee protection against concurrent modifications in the same way it would on those database systems.
+
+Transactions still help maintain consistency between status updates and audit records. However, production deployment with concurrent users should use a database that supports the required row-level locking behavior, such as MySQL or PostgreSQL, followed by concurrency testing.
+
+### Audit History
+
+Status transitions are recorded in the `status_histories` table with the service request, actor, previous status, new status, comment and timestamp.
+
+Assignment events are also recorded in this table using the same previous and new status values. A dedicated activity or assignment history table would be a cleaner design for a larger production system.
+
+
 ## Acknowledgements
 
 Developed as part of the Quantix Global Software Engineering Internship selection process.

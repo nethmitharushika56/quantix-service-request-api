@@ -6,6 +6,7 @@ use App\Http\Controllers\Controller;
 use App\Models\ServiceRequest;
 use App\Models\StatusHistory;
 use App\Models\User;
+use App\Notifications\ServiceRequestNotification;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 
@@ -13,6 +14,7 @@ class ServiceRequestWorkflowController extends Controller
 {
     /**
      * Employee submits a Draft or Returned request.
+     * Notify the employee's manager.
      */
     public function submit(Request $request, ServiceRequest $serviceRequest)
     {
@@ -27,37 +29,57 @@ class ServiceRequestWorkflowController extends Controller
             ], 403);
         }
 
-        if (!in_array($serviceRequest->status, ['Draft', 'Returned'])) {
-            return response()->json([
-                'message' => 'Only Draft or Returned requests can be submitted.',
-            ], 422);
-        }
+        $updatedRequest = DB::transaction(function () use (
+            $serviceRequest,
+            $user
+        ) {
+            $lockedRequest = ServiceRequest::whereKey($serviceRequest->id)
+                ->lockForUpdate()
+                ->firstOrFail();
 
-        DB::transaction(function () use ($serviceRequest, $user) {
-            $oldStatus = $serviceRequest->status;
+            if (!in_array($lockedRequest->status, ['Draft', 'Returned'])) {
+                abort(422, 'Only Draft or Returned requests can be submitted.');
+            }
 
-            $serviceRequest->update([
+            $oldStatus = $lockedRequest->status;
+
+            $lockedRequest->update([
                 'status' => 'Submitted',
             ]);
 
             StatusHistory::create([
-                'service_request_id' => $serviceRequest->id,
+                'service_request_id' => $lockedRequest->id,
                 'actor_id' => $user->id,
                 'old_status' => $oldStatus,
                 'new_status' => 'Submitted',
                 'comment' => 'Request submitted by employee.',
                 'created_at' => now(),
             ]);
+
+            return $lockedRequest->fresh();
         });
+
+        // Notify the employee's manager.
+        $manager = $user->manager;
+
+        if ($manager) {
+            $manager->notify(new ServiceRequestNotification(
+                $updatedRequest->id,
+                $updatedRequest->title,
+                'submitted',
+                'A new service request has been submitted for your review.'
+            ));
+        }
 
         return response()->json([
             'message' => 'Service request submitted successfully.',
-            'data' => $serviceRequest->fresh(),
+            'data' => $updatedRequest,
         ]);
     }
 
     /**
      * Manager approves, returns or rejects a request.
+     * Notify the employee of the decision.
      */
     public function decide(Request $request, ServiceRequest $serviceRequest)
     {
@@ -69,16 +91,10 @@ class ServiceRequestWorkflowController extends Controller
             ], 403);
         }
 
-        if ($serviceRequest->employee->manager_id !== $user->id) {
+        if ($serviceRequest->employee?->manager_id !== $user->id) {
             return response()->json([
                 'message' => 'You can only review requests from your direct reports.',
             ], 403);
-        }
-
-        if ($serviceRequest->status !== 'Submitted') {
-            return response()->json([
-                'message' => 'Only submitted requests can be reviewed.',
-            ], 422);
         }
 
         $validated = $request->validate([
@@ -93,36 +109,58 @@ class ServiceRequestWorkflowController extends Controller
             ],
         ]);
 
-        DB::transaction(function () use (
+        $updatedRequest = DB::transaction(function () use (
             $serviceRequest,
             $user,
             $validated
         ) {
-            $oldStatus = $serviceRequest->status;
+            $lockedRequest = ServiceRequest::whereKey($serviceRequest->id)
+                ->lockForUpdate()
+                ->firstOrFail();
+
+            if ($lockedRequest->status !== 'Submitted') {
+                abort(422, 'Only submitted requests can be reviewed.');
+            }
+
+            $oldStatus = $lockedRequest->status;
             $newStatus = $validated['decision'];
 
-            $serviceRequest->update([
+            $lockedRequest->update([
                 'status' => $newStatus,
             ]);
 
             StatusHistory::create([
-                'service_request_id' => $serviceRequest->id,
+                'service_request_id' => $lockedRequest->id,
                 'actor_id' => $user->id,
                 'old_status' => $oldStatus,
                 'new_status' => $newStatus,
                 'comment' => $validated['comment'],
                 'created_at' => now(),
             ]);
+
+            return $lockedRequest->fresh();
         });
+
+        // Notify the employee.
+        $serviceRequest->employee->notify(
+            new ServiceRequestNotification(
+                $updatedRequest->id,
+                $updatedRequest->title,
+                strtolower($validated['decision']),
+                'Your service request has been '
+                    . strtolower($validated['decision']) . '.'
+            )
+        );
 
         return response()->json([
             'message' => 'Manager decision recorded successfully.',
-            'data' => $serviceRequest->fresh(),
+            'data' => $updatedRequest,
         ]);
     }
 
     /**
-     * Operations assigns an approved request to an operations user.
+     * Operations assigns an approved request
+     * to an Operations user.
      */
     public function assign(Request $request, ServiceRequest $serviceRequest)
     {
@@ -132,12 +170,6 @@ class ServiceRequestWorkflowController extends Controller
             return response()->json([
                 'message' => 'Only operations users can assign requests.',
             ], 403);
-        }
-
-        if ($serviceRequest->status !== 'Approved') {
-            return response()->json([
-                'message' => 'Only approved requests can be assigned.',
-            ], 422);
         }
 
         $validated = $request->validate([
@@ -156,35 +188,56 @@ class ServiceRequestWorkflowController extends Controller
             ], 422);
         }
 
-        DB::transaction(function () use (
+        $updatedRequest = DB::transaction(function () use (
             $serviceRequest,
             $assignee,
             $user
         ) {
-            $serviceRequest->update([
+            $lockedRequest = ServiceRequest::whereKey($serviceRequest->id)
+                ->lockForUpdate()
+                ->firstOrFail();
+
+            if ($lockedRequest->status !== 'Approved') {
+                abort(422, 'Only approved requests can be assigned.');
+            }
+
+            $previousAssignee = $lockedRequest->assigned_to;
+
+            $lockedRequest->update([
                 'assigned_to' => $assignee->id,
             ]);
 
-            // Record the assignment as an audit event.
             StatusHistory::create([
-                'service_request_id' => $serviceRequest->id,
+                'service_request_id' => $lockedRequest->id,
                 'actor_id' => $user->id,
-                'old_status' => $serviceRequest->status,
-                'new_status' => $serviceRequest->status,
-                'comment' => 'Request assigned to operations user ID '
+                'old_status' => $lockedRequest->status,
+                'new_status' => $lockedRequest->status,
+                'comment' => 'Assignment changed from user ID '
+                    . ($previousAssignee ?? 'unassigned')
+                    . ' to operations user ID '
                     . $assignee->id . '.',
                 'created_at' => now(),
             ]);
+
+            return $lockedRequest->fresh('assignee');
         });
+
+        // Notify the assigned Operations user.
+        $assignee->notify(new ServiceRequestNotification(
+            $updatedRequest->id,
+            $updatedRequest->title,
+            'assigned',
+            'A service request has been assigned to you.'
+        ));
 
         return response()->json([
             'message' => 'Service request assigned successfully.',
-            'data' => $serviceRequest->fresh('assignee'),
+            'data' => $updatedRequest,
         ]);
     }
 
     /**
-     * Assigned operations user starts the work.
+     * Assigned Operations user starts the work.
      */
     public function start(Request $request, ServiceRequest $serviceRequest)
     {
@@ -196,43 +249,48 @@ class ServiceRequestWorkflowController extends Controller
             ], 403);
         }
 
-        if ($serviceRequest->assigned_to !== $user->id) {
-            return response()->json([
-                'message' => 'You can only start requests assigned to you.',
-            ], 403);
-        }
+        $updatedRequest = DB::transaction(function () use (
+            $serviceRequest,
+            $user
+        ) {
+            $lockedRequest = ServiceRequest::whereKey($serviceRequest->id)
+                ->lockForUpdate()
+                ->firstOrFail();
 
-        if ($serviceRequest->status !== 'Approved') {
-            return response()->json([
-                'message' => 'Only approved requests can be started.',
-            ], 422);
-        }
+            if ($lockedRequest->assigned_to !== $user->id) {
+                abort(403, 'You can only start requests assigned to you.');
+            }
 
-        DB::transaction(function () use ($serviceRequest, $user) {
-            $oldStatus = $serviceRequest->status;
+            if ($lockedRequest->status !== 'Approved') {
+                abort(422, 'Only approved requests can be started.');
+            }
 
-            $serviceRequest->update([
+            $oldStatus = $lockedRequest->status;
+
+            $lockedRequest->update([
                 'status' => 'In Progress',
             ]);
 
             StatusHistory::create([
-                'service_request_id' => $serviceRequest->id,
+                'service_request_id' => $lockedRequest->id,
                 'actor_id' => $user->id,
                 'old_status' => $oldStatus,
                 'new_status' => 'In Progress',
                 'comment' => 'Work started by operations.',
                 'created_at' => now(),
             ]);
+
+            return $lockedRequest->fresh();
         });
 
         return response()->json([
             'message' => 'Request marked as In Progress.',
-            'data' => $serviceRequest->fresh(),
+            'data' => $updatedRequest,
         ]);
     }
 
     /**
-     * Assigned operations user completes the work.
+     * Assigned Operations user completes the work.
      */
     public function complete(Request $request, ServiceRequest $serviceRequest)
     {
@@ -244,38 +302,43 @@ class ServiceRequestWorkflowController extends Controller
             ], 403);
         }
 
-        if ($serviceRequest->assigned_to !== $user->id) {
-            return response()->json([
-                'message' => 'You can only complete requests assigned to you.',
-            ], 403);
-        }
+        $updatedRequest = DB::transaction(function () use (
+            $serviceRequest,
+            $user
+        ) {
+            $lockedRequest = ServiceRequest::whereKey($serviceRequest->id)
+                ->lockForUpdate()
+                ->firstOrFail();
 
-        if ($serviceRequest->status !== 'In Progress') {
-            return response()->json([
-                'message' => 'Only In Progress requests can be completed.',
-            ], 422);
-        }
+            if ($lockedRequest->assigned_to !== $user->id) {
+                abort(403, 'You can only complete requests assigned to you.');
+            }
 
-        DB::transaction(function () use ($serviceRequest, $user) {
-            $oldStatus = $serviceRequest->status;
+            if ($lockedRequest->status !== 'In Progress') {
+                abort(422, 'Only In Progress requests can be completed.');
+            }
 
-            $serviceRequest->update([
+            $oldStatus = $lockedRequest->status;
+
+            $lockedRequest->update([
                 'status' => 'Completed',
             ]);
 
             StatusHistory::create([
-                'service_request_id' => $serviceRequest->id,
+                'service_request_id' => $lockedRequest->id,
                 'actor_id' => $user->id,
                 'old_status' => $oldStatus,
                 'new_status' => 'Completed',
                 'comment' => 'Work completed by operations.',
                 'created_at' => now(),
             ]);
+
+            return $lockedRequest->fresh();
         });
 
         return response()->json([
             'message' => 'Request marked as Completed.',
-            'data' => $serviceRequest->fresh(),
+            'data' => $updatedRequest,
         ]);
     }
 }

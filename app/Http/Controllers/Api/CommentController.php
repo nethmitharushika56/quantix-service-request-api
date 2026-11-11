@@ -9,14 +9,22 @@ use Illuminate\Http\Request;
 
 class CommentController extends Controller
 {
+    /**
+     * Add a comment to a service request.
+     */
     public function store(Request $request, ServiceRequest $serviceRequest)
     {
         $user = $request->user();
 
-        $isEmployee = $serviceRequest->employee_id === $user->id;
+        // Employee can comment on their own requests.
+        $isEmployee = $user->role === 'employee'
+            && $serviceRequest->employee_id === $user->id;
 
-        $isManager = $serviceRequest->employee?->manager_id === $user->id;
+        // Manager can comment on direct reports' requests.
+        $isManager = $user->role === 'manager'
+            && $serviceRequest->employee?->manager_id === $user->id;
 
+        // Operations can comment on all requests.
         $isOperations = $user->role === 'operations';
 
         if (!$isEmployee && !$isManager && !$isOperations) {
@@ -37,7 +45,7 @@ class CommentController extends Controller
 
         return response()->json([
             'message' => 'Comment added successfully.',
-            'data' => $comment->load('user'),
+            'data' => $comment->load('user:id,name,email'),
         ], 201);
     }
 }

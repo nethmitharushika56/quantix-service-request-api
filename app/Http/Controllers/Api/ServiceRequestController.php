@@ -5,83 +5,85 @@ namespace App\Http\Controllers\Api;
 use App\Http\Controllers\Controller;
 use App\Models\ServiceRequest as ServiceRequestModel;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
 
 class ServiceRequestController extends Controller
 {
+    /**
+     * List service requests with search, filters, sorting and pagination.
+     */
     public function index(Request $request)
-{
-    $user = $request->user();
+    {
+        $validated = $request->validate([
+            'search' => ['sometimes', 'string', 'max:255'],
+            'status' => [
+                'sometimes',
+                'in:Draft,Submitted,Returned,Approved,Rejected,In Progress,Completed',
+            ],
+            'employee_id' => ['sometimes', 'integer', 'exists:users,id'],
+            'assigned_to' => ['sometimes', 'integer', 'exists:users,id'],
+            'sort_by' => ['sometimes', 'in:created_at,title,status'],
+            'sort_direction' => ['sometimes', 'in:asc,desc'],
+            'per_page' => ['sometimes', 'integer', 'min:1', 'max:100'],
+        ]);
 
-    $query = ServiceRequestModel::with(['employee', 'assignee']);
+        $user = $request->user();
 
-    // Role-based access
-    if ($user->role === 'employee') {
-        $query->where('employee_id', $user->id);
-    } elseif ($user->role === 'manager') {
-        $query->whereHas('employee', function ($employeeQuery) use ($user) {
-            $employeeQuery->where('manager_id', $user->id);
-        });
-    }
+        $query = ServiceRequestModel::query()
+            ->with([
+                'employee:id,name,email',
+                'assignee:id,name,email',
+            ]);
 
-    // Search by title or description
-    if ($request->filled('search')) {
-        $search = $request->input('search');
+        // Role-based access control.
+        if ($user->role === 'employee') {
+            $query->where('employee_id', $user->id);
+        } elseif ($user->role === 'manager') {
+            $query->whereHas('employee', function ($employeeQuery) use ($user) {
+                $employeeQuery->where('manager_id', $user->id);
+            });
+        }
 
-        $query->where(function ($q) use ($search) {
-            $q->where('title', 'like', "%{$search}%")
-                ->orWhere('description', 'like', "%{$search}%");
-        });
-    }
+        // Search by title or description.
+        if (!empty($validated['search'])) {
+            $search = $validated['search'];
 
-    // Filter by status
-    if ($request->filled('status')) {
-        $query->where('status', $request->input('status'));
-    }
+            $query->where(function ($q) use ($search) {
+                $q->where('title', 'like', "%{$search}%")
+                    ->orWhere('description', 'like', "%{$search}%");
+            });
+        }
 
-    // Filter by employee
-    if ($request->filled('employee_id')) {
-        $query->where('employee_id', $request->input('employee_id'));
-    }
+        // Apply filters.
+        if (isset($validated['status'])) {
+            $query->where('status', $validated['status']);
+        }
 
-    // Filter by assigned operations user
-    if ($request->filled('assigned_to')) {
-        $query->where('assigned_to', $request->input('assigned_to'));
-    }
+        if (isset($validated['employee_id'])) {
+            $query->where('employee_id', $validated['employee_id']);
+        }
 
-    // Sorting
-    $sortBy = $request->input('sort_by', 'created_at');
-    $sortDirection = $request->input('sort_direction', 'desc');
+        if (isset($validated['assigned_to'])) {
+            $query->where('assigned_to', $validated['assigned_to']);
+        }
 
-    $allowedSortColumns = ['created_at', 'title', 'status'];
+        // Sorting.
+        $sortBy = $validated['sort_by'] ?? 'created_at';
+        $sortDirection = $validated['sort_direction'] ?? 'desc';
 
-    if (!in_array($sortBy, $allowedSortColumns)) {
+        $query->orderBy($sortBy, $sortDirection);
+
+        // Pagination.
+        $perPage = $validated['per_page'] ?? 10;
+
         return response()->json([
-            'message' => 'Invalid sorting column.',
-        ], 422);
+            'data' => $query->paginate($perPage),
+        ]);
     }
 
-    if (!in_array($sortDirection, ['asc', 'desc'])) {
-        return response()->json([
-            'message' => 'Invalid sorting direction.',
-        ], 422);
-    }
-
-    $query->orderBy($sortBy, $sortDirection);
-
-    // Pagination
-    $perPage = $request->input('per_page', 10);
-
-    if (!filter_var($perPage, FILTER_VALIDATE_INT) || $perPage < 1 || $perPage > 100) {
-        return response()->json([
-            'message' => 'per_page must be between 1 and 100.',
-        ], 422);
-    }
-
-    return response()->json([
-        'data' => $query->paginate($perPage),
-    ]);
-}
-
+    /**
+     * Create a service request.
+     */
     public function store(Request $request)
     {
         if ($request->user()->role !== 'employee') {
@@ -105,6 +107,9 @@ class ServiceRequestController extends Controller
         ], 201);
     }
 
+    /**
+     * View a single service request.
+     */
     public function show(Request $request, ServiceRequestModel $serviceRequest)
     {
         if (!$this->canView($request->user(), $serviceRequest)) {
@@ -113,16 +118,21 @@ class ServiceRequestController extends Controller
             ], 403);
         }
 
+        $serviceRequest->load([
+            'employee:id,name,email',
+            'assignee:id,name,email',
+            'comments.user:id,name,email',
+            'statusHistories.actor:id,name,email',
+        ]);
+
         return response()->json([
-            'data' => $serviceRequest->load([
-                'employee',
-                'assignee',
-                'comments.user',
-                'statusHistories.actor',
-            ]),
+            'data' => $serviceRequest,
         ]);
     }
 
+    /**
+     * Update a Draft or Returned request.
+     */
     public function update(Request $request, ServiceRequestModel $serviceRequest)
     {
         $user = $request->user();
@@ -136,25 +146,47 @@ class ServiceRequestController extends Controller
             ], 403);
         }
 
-        if (!in_array($serviceRequest->status, ['Draft', 'Returned'])) {
-            return response()->json([
-                'message' => 'Only Draft or Returned requests can be edited.',
-            ], 422);
-        }
-
         $validated = $request->validate([
             'title' => ['sometimes', 'required', 'string', 'max:255'],
             'description' => ['sometimes', 'required', 'string'],
         ]);
 
-        $serviceRequest->update($validated);
+        if (empty($validated)) {
+            return response()->json([
+                'message' => 'At least one field must be provided.',
+            ], 422);
+        }
+
+        $updatedRequest = DB::transaction(function () use (
+            $serviceRequest,
+            $user,
+            $validated
+        ) {
+            $lockedRequest = ServiceRequestModel::whereKey($serviceRequest->id)
+                ->lockForUpdate()
+                ->firstOrFail();
+
+            if (
+                $lockedRequest->employee_id !== $user->id ||
+                !in_array($lockedRequest->status, ['Draft', 'Returned'])
+            ) {
+                abort(422, 'Only your Draft or Returned requests can be edited.');
+            }
+
+            $lockedRequest->update($validated);
+
+            return $lockedRequest->fresh();
+        });
 
         return response()->json([
             'message' => 'Service request updated successfully.',
-            'data' => $serviceRequest->fresh(),
+            'data' => $updatedRequest,
         ]);
     }
 
+    /**
+     * Delete a Draft request.
+     */
     public function destroy(Request $request, ServiceRequestModel $serviceRequest)
     {
         $user = $request->user();
@@ -181,6 +213,9 @@ class ServiceRequestController extends Controller
         ]);
     }
 
+    /**
+     * Check whether the current user can view a request.
+     */
     private function canView($user, ServiceRequestModel $serviceRequest): bool
     {
         if ($user->role === 'operations') {

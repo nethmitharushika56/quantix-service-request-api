@@ -11,13 +11,8 @@ class DatabaseSeeder extends Seeder
         $this->call([
             UserSeeder::class,
             ServiceRequestSeeder::class,
+            StatusHistorySeeder::class,
+            CommentSeeder::class,
         ]);
-
-        $this->call([
-    UserSeeder::class,
-    ServiceRequestSeeder::class,
-    StatusHistorySeeder::class,
-    CommentSeeder::class,
-]);
     }
 }
